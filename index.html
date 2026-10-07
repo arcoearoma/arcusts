@@ -97,28 +97,50 @@ async function lerArquivo(file) {
   if (error || data?.error) { $('#rev').innerHTML = ''; return alert('Não foi possível ler a imagem: ' + (data?.error || error.message)); }
   S.nota = {...data, path};
   S.ins = await q(sb.from('insumos').select('id,nome,unidade_base').order('nome'));
-  S.ap = await q(sb.from('apelidos_insumo').select('insumo_id,apelido'));
+  S.ap = await q(sb.from('apelidos_insumo').select('id,insumo_id,apelido,conteudo_embalagem,unidade'));
   review();
 }
 document.addEventListener('paste', e => {
   const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
   if (f && tab == 'compras' && $('#rev')) lerArquivo(f);
 });
-function match(d) {
-  const n = String(d).toLowerCase().trim();
-  const a = S.ap.find(x => x.apelido.toLowerCase() == n); if (a) return a.insumo_id;
-  const i = S.ins.find(x => x.nome.toLowerCase() == n); return i ? i.id : '';
+// ---- similaridade de nomes ----
+const nk = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const nums = s => (String(s).match(/\d+/g) || []).join(',');
+const bg = s => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const k = s.slice(i, i + 2); m.set(k, (m.get(k) || 0) + 1); } return m; };
+function sim(a, b) {
+  const x = nk(a), y = nk(b); if (!x || !y) return 0; if (x == y) return 1;
+  const A = bg(x), B = bg(y); let n = 0, t = 0;
+  A.forEach((v, k) => { t += v; n += Math.min(v, B.get(k) || 0); }); B.forEach(v => t += v);
+  let s = 2 * n / t; if (nums(a) != nums(b)) s *= .6; // números diferentes = produto provavelmente diferente
+  return s;
 }
+function match(d) {
+  let best = {id: '', score: 0};
+  S.ap.forEach(a => { const s = sim(d, a.apelido); if (s > best.score) best = {id: a.insumo_id, score: s, ap: a}; });
+  S.ins.forEach(i => { const s = sim(d, i.nome); if (s > best.score) best = {id: i.id, score: s}; });
+  return best.score >= .85 ? best : {id: '', score: best.score};
+}
+const BASE = u => ({kg:'g', g:'g', l:'ml', lt:'ml', ml:'ml'})[String(u).toLowerCase()] || 'un';
+const FATOR = u => ['kg', 'l', 'lt'].includes(String(u).toLowerCase()) ? 1000 : 1;
+
 function review() {
   const n = S.nota;
   $('#rev').innerHTML = `<h3 style="margin-top:12px">Conferir antes de salvar</h3>
+  <p class="mut">Em <b>Conteúdo</b>, informe quanto vem em cada embalagem (pavio pacote com 10 → 10 un; essência de 100 ml → 100 ml). O custo por unidade aparece ao lado para você confirmar.</p>
   <div class="row"><input id="r_data" type="date" value="${esc(n.data || today())}"><input id="r_forn" placeholder="Fornecedor (opcional)" value="${esc(n.fornecedor)}"><input id="r_orig" placeholder="Origem (Shopee, loja...)" value="${esc(n.origem)}"></div>
-  <table id="r_itens">${(n.itens || []).map(it => { const m = match(it.descricao); return `<tr>
-    <td><input data-k="d" value="${esc(it.descricao)}"></td>
-    <td><input data-k="q" type="number" step="any" value="${it.quantidade}" style="width:75px"></td>
-    <td><input data-k="u" value="${esc(it.unidade || 'un')}" style="width:50px"></td>
+  <table id="r_itens"><tr><th>Item</th><th>Qtd</th><th>Conteúdo</th><th>Un.</th><th>Valor total</th><th>Custo unitário</th><th>Insumo</th><th></th></tr>${(n.itens || []).map(it => {
+    const m = match(it.descricao); let c = it.conteudo_embalagem || 1, u = it.unidade || 'un';
+    if (m.ap && m.score >= .95 && m.ap.conteudo_embalagem) { c = m.ap.conteudo_embalagem; u = m.ap.unidade || u; }
+    const nome = m.id ? S.ins.find(i => i.id == m.id)?.nome : '';
+    return `<tr class="it">
+    <td><input data-k="d" value="${esc(it.descricao)}">${m.id && m.score < 1 ? `<div class="mut">parecido com “${esc(nome)}” (${Math.round(m.score * 100)}%), confira</div>` : ''}</td>
+    <td><input data-k="q" type="number" step="any" value="${it.quantidade}" style="width:65px"></td>
+    <td><input data-k="c" type="number" step="any" value="${c}" style="width:75px"></td>
+    <td><input data-k="u" value="${esc(u)}" style="width:50px"></td>
     <td><input data-k="p" type="number" step="any" value="${it.preco_total}" style="width:85px"></td>
-    <td><select data-k="i"><option value="">— sem vínculo —</option><option value="__novo" ${m ? '' : 'selected'}>+ Criar insumo novo</option>${S.ins.map(x => `<option value="${x.id}" ${m == x.id ? 'selected' : ''}>${esc(x.nome)} (${x.unidade_base})</option>`).join('')}</select></td>
+    <td class="pv"></td>
+    <td><select data-k="i"><option value="">— sem vínculo —</option><option value="__novo" ${m.id ? '' : 'selected'}>+ Criar insumo novo</option>${S.ins.map(x => `<option value="${x.id}" ${m.id == x.id ? 'selected' : ''}>${esc(x.nome)} (${x.unidade_base})</option>`).join('')}</select></td>
     <td><button class="sm" onclick="this.closest('tr').remove();soma()">✕</button></td></tr>`; }).join('')}</table>
   <div class="row"><label>Frete <input id="r_frete" type="number" step="any" value="${n.frete || 0}" style="width:90px"></label>
   <label>Desconto <input id="r_desc" type="number" step="any" value="${n.desconto || 0}" style="width:90px"></label>
@@ -127,15 +149,19 @@ function review() {
   $('#rev').oninput = soma; soma();
 }
 function soma() {
-  const itens = [...document.querySelectorAll('#r_itens tr')].reduce((s, r) => s + (+r.querySelector('[data-k=p]').value || 0), 0);
+  let itens = 0;
+  document.querySelectorAll('#r_itens tr.it').forEach(r => {
+    const g = k => r.querySelector(`[data-k=${k}]`).value, p = +g('p') || 0, q = +g('q') || 0, c = +g('c') || 0, u = g('u');
+    itens += p;
+    r.querySelector('.pv').textContent = q * c > 0 ? R4(p / (q * c * FATOR(u))) + ' / ' + BASE(u) : '—';
+  });
   const tot = itens + (+$('#r_frete').value || 0) + (+$('#r_out').value || 0) - (+$('#r_desc').value || 0), inf = S.nota.total_informado;
   $('#r_soma').innerHTML = `Total calculado: <b>${R(tot)}</b>` + (inf != null ? ` · Total na nota: ${R(inf)} ${Math.abs(inf - tot) < .02 ? '<span class="ok">✔ confere</span>' : '<span class="bad">⚠ não confere, revise os valores</span>'}` : '');
 }
 async function salvar() {
-  const n = S.nota, base = u => ({kg:'g', g:'g', l:'ml', lt:'ml', ml:'ml'})[u.toLowerCase()] || 'un';
-  const rows = [...document.querySelectorAll('#r_itens tr')].map(r => ({
-    d: r.querySelector('[data-k=d]').value.trim(), q: +r.querySelector('[data-k=q]').value,
-    u: r.querySelector('[data-k=u]').value.trim() || 'un', p: +r.querySelector('[data-k=p]').value, i: r.querySelector('[data-k=i]').value}));
+  const n = S.nota;
+  const rows = [...document.querySelectorAll('#r_itens tr.it')].map(r => { const g = k => r.querySelector(`[data-k=${k}]`).value; return {
+    d: g('d').trim(), q: +g('q'), c: +g('c') || 1, u: g('u').trim() || 'un', p: +g('p'), i: g('i')}; });
   if (!rows.length || rows.some(x => !x.d || !(x.q > 0) || isNaN(x.p))) return alert('Confira descrição, quantidade e valor de cada item.');
   const forn = $('#r_forn').value.trim(); let fid = null;
   if (forn) {
@@ -145,25 +171,40 @@ async function salvar() {
   const c = (await q(sb.from('compras').insert({data: $('#r_data').value, fornecedor_id: fid, origem: $('#r_orig').value || null,
     numero_pedido: n.numero_pedido, total_informado: n.total_informado, imagem_path: n.path,
     frete: +$('#r_frete').value || 0, desconto: +$('#r_desc').value || 0, outros_custos: +$('#r_out').value || 0}).select('id')))[0].id;
+  const criados = [];
   for (const x of rows) {
-    if (x.i == '__novo') x.i = (await q(sb.from('insumos').insert({nome: x.d, unidade_base: base(x.u)}).select('id')))[0].id;
-    else if (x.i) await sb.from('apelidos_insumo').insert({insumo_id: x.i, apelido: x.d}); // guarda o apelido (duplicado é ignorado)
+    if (x.i == '__novo') {
+      const j = criados.find(o => sim(o.nome, x.d) >= .85); // evita criar duas vezes o mesmo insumo na mesma nota
+      x.i = j ? j.id : (await q(sb.from('insumos').insert({nome: x.d, unidade_base: BASE(x.u)}).select('id')))[0].id;
+      if (!j) criados.push({id: x.i, nome: x.d});
+    }
+    if (x.i) { // memoriza o nome da nota e o conteúdo da embalagem para as próximas compras
+      const ex = S.ap.find(a => a.apelido.toLowerCase() == x.d.toLowerCase()), o = {insumo_id: x.i, conteudo_embalagem: x.c, unidade: x.u};
+      if (ex) await sb.from('apelidos_insumo').update(o).eq('id', ex.id); else await sb.from('apelidos_insumo').insert({...o, apelido: x.d});
+    }
   }
-  await q(sb.from('itens_compra').insert(rows.map(x => ({compra_id: c, insumo_id: x.i || null, descricao_original: x.d, quantidade: x.q, unidade: x.u, preco_total: x.p}))));
+  await q(sb.from('itens_compra').insert(rows.map(x => ({compra_id: c, insumo_id: x.i || null, descricao_original: x.d, quantidade: x.q, conteudo_embalagem: x.c, unidade: x.u, preco_total: x.p}))));
   await q(sb.from('compras').update({status: 'confirmada'}).eq('id', c));
   const bad = await q(sb.from('itens_compra').select('descricao_original').eq('compra_id', c).not('insumo_id', 'is', null).is('qtd_base', null));
-  if (bad.length) alert('Atenção: a unidade não combina com o insumo (ex.: "un" para um insumo em gramas) em: ' + bad.map(b => b.descricao_original).join(', ') + '. Corrija a unidade do insumo ou exclua e refaça a compra.');
+  if (bad.length) alert('Atenção: a unidade não combina com a unidade do insumo (ex.: "un" para um insumo em gramas) em: ' + bad.map(b => b.descricao_original).join(', ') + '. Exclua a compra e refaça com a unidade correta.');
   render();
 }
 
 // ---------- insumos ----------
 async function vInsumos() {
-  const d = await q(sb.from('insumos').select('*').order('categoria').order('nome'));
+  const d = await q(sb.from('insumos').select('*').order('categoria').order('nome')); S.insAll = d;
   $('#main').innerHTML = `<div class="card"><button onclick="novoInsumo()">+ Novo insumo</button>
-  <table><tr><th>Nome</th><th>Categoria</th><th>Custo atual</th><th>Calcular pelo</th></tr>${d.map(x => `<tr><td>${esc(x.nome)}</td>
+  <table><tr><th>Nome</th><th>Categoria</th><th>Custo atual</th><th>Calcular pelo</th><th>Duplicado?</th></tr>${d.map(x => `<tr><td>${esc(x.nome)}</td>
   <td><input value="${esc(x.categoria)}" onchange="upd('insumos','${x.id}',{categoria:this.value||null})"></td>
   <td>${x.custo_atual == null ? '<span class="mut">sem compra</span>' : R4(x.custo_atual) + ' / ' + x.unidade_base}</td>
-  <td><select onchange="upd('insumos','${x.id}',{metodo_custo:this.value}).then(render)"><option value="ultimo" ${x.metodo_custo=='ultimo'?'selected':''}>Última compra</option><option value="medio" ${x.metodo_custo=='medio'?'selected':''}>Média das compras</option></select></td></tr>`).join('')}</table></div>`;
+  <td><select onchange="upd('insumos','${x.id}',{metodo_custo:this.value}).then(render)"><option value="ultimo" ${x.metodo_custo=='ultimo'?'selected':''}>Última compra</option><option value="medio" ${x.metodo_custo=='medio'?'selected':''}>Média das compras</option></select></td>
+  <td><select onchange="mesclar('${x.id}',this.value)"><option value="">Juntar com…</option>${d.filter(o => o.id != x.id).map(o => `<option value="${o.id}">${esc(o.nome)}</option>`).join('')}</select></td></tr>`).join('')}</table></div>`;
+}
+async function mesclar(o, dst) {
+  if (!dst) return;
+  const a = S.insAll.find(x => x.id == o), b = S.insAll.find(x => x.id == dst);
+  if (!confirm(`Juntar "${a.nome}" dentro de "${b.nome}"?\nCompras e fichas técnicas passam para "${b.nome}" e "${a.nome}" deixa de existir.`)) return render();
+  await q(sb.rpc('mesclar_insumos', {p_origem: o, p_destino: dst})); render();
 }
 async function novoInsumo() {
   const nome = prompt('Nome do insumo (ex.: Cera de soja):'); if (!nome) return;
