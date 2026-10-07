@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Custos – Arco e Aroma</title>
+<style>
+:root{--bg:#f5f4f7;--ink:#262030;--mut:#7a7385;--ac:#5b3a7a;--line:#e0dce6;--ok:#2e7d4f;--bad:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif}
+nav{display:flex;gap:6px;padding:10px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;overflow-x:auto}
+nav button{background:none;color:var(--ink);border:0;padding:8px 14px;border-radius:8px}
+nav button.on{background:var(--ac);color:#fff}
+main{max-width:960px;margin:0 auto;padding:12px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px;overflow-x:auto}
+h3{margin:0 0 8px}
+table{width:100%;border-collapse:collapse}
+td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+input,select{font:inherit;padding:7px;border:1px solid var(--line);border-radius:6px;max-width:100%}
+button,.btn{font:inherit;background:var(--ac);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer;display:inline-block}
+button.sm{padding:3px 8px;background:#eee;color:var(--ink)}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.mut{color:var(--mut)}.ok{color:var(--ok)}.bad{color:var(--bad)}
+details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;font-weight:600}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://xwwmlqlsoehfbozzecba.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_lRPr3aotKyQTB3WwqTYnBQ_7V6SDONY';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = s => document.querySelector(s);
+const nf = (v, max) => Number(v || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: max});
+const R = v => 'R$ ' + nf(v, 2), R4 = v => 'R$ ' + nf(v, 4);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const today = () => new Date().toISOString().slice(0, 10);
+let tab = 'compras', S = {};
+
+async function q(p) { const {data, error} = await p; if (error) { alert(error.message); throw error; } return data; }
+const upd = (t, id, o) => q(sb.from(t).update(o).eq('id', id));
+
+// ---------- login / shell ----------
+function login() {
+  $('#app').innerHTML = `<div class="card" style="max-width:340px;margin:60px auto"><h3>Entrar</h3>
+  <div class="row"><input id="em" type="email" placeholder="E-mail" style="width:100%"><input id="pw" type="password" placeholder="Senha" style="width:100%"></div>
+  <button onclick="doLogin()">Entrar</button></div>`;
+}
+async function doLogin() {
+  const {error} = await sb.auth.signInWithPassword({email: $('#em').value, password: $('#pw').value});
+  error ? alert(error.message) : render();
+}
+async function render() {
+  const names = {compras:'Compras', insumos:'Insumos', produtos:'Produtos', canais:'Canais de venda'};
+  $('#app').innerHTML = `<nav>${Object.keys(names).map(t => `<button class="${t==tab?'on':''}" onclick="go('${t}')">${names[t]}</button>`).join('')}<button onclick="sb.auth.signOut().then(login)">Sair</button></nav><main id="main">Carregando…</main>`;
+  await ({compras: vCompras, insumos: vInsumos, produtos: vProdutos, canais: vCanais})[tab]();
+}
+const go = t => { tab = t; render(); };
+
+// ---------- compras ----------
+async function vCompras() {
+  const [m, c] = await Promise.all([
+    q(sb.from('v_gastos_mensais').select('*').order('mes', {ascending: false}).limit(6)),
+    q(sb.from('compras').select('id,data,fornecedor_nome,origem,total,status,fornecedores(nome)').order('data', {ascending: false}).limit(60))]);
+  $('#main').innerHTML = `
+  <div class="card"><label class="btn">📷 Nova compra (foto ou print)<input type="file" accept="image/*" hidden onchange="lerArquivo(this.files[0])"></label>
+  <span class="mut"> Dica: no computador, cole um print com Ctrl+V.</span><div id="rev"></div></div>
+  <div class="card"><h3>Gastos por mês</h3><table>${m.map(x => `<tr><td>${x.mes.slice(0,7)}</td><td>${x.qtd_compras} compras</td><td>frete ${R(x.frete)}</td><td><b>${R(x.total_gasto)}</b></td></tr>`).join('') || '<tr><td class="mut">Nenhuma compra confirmada ainda.</td></tr>'}</table></div>
+  <div class="card"><h3>Compras registradas</h3><table>${c.map(x => `<tr><td>${x.data}</td><td>${esc(x.fornecedores?.nome || x.fornecedor_nome || '—')}</td><td>${esc(x.origem || '')}</td><td>${R(x.total)}</td><td>${x.status}</td><td><button class="sm" onclick="delCompra('${x.id}')">Excluir</button></td></tr>`).join('')}</table></div>`;
+}
+async function delCompra(id) {
+  if (!confirm('Excluir esta compra? Os custos serão recalculados.')) return;
+  await q(sb.from('compras').delete().eq('id', id)); render();
+}
+function toJpeg(file) {
+  return new Promise(res => {
+    const i = new Image();
+    i.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(i.width, i.height)), c = document.createElement('canvas');
+      c.width = i.width * k; c.height = i.height * k;
+      c.getContext('2d').drawImage(i, 0, 0, c.width, c.height);
+      c.toBlob(b => res(b), 'image/jpeg', .85);
+    };
+    i.src = URL.createObjectURL(file);
+  });
+}
+const b64 = b => new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result.split(',')[1]); f.readAsDataURL(b); });
+async function lerArquivo(file) {
+  if (!file) return;
+  $('#rev').innerHTML = '<p>Lendo a nota…</p>';
+  const blob = await toJpeg(file), path = crypto.randomUUID() + '.jpg';
+  await sb.storage.from('notas').upload(path, blob, {contentType: 'image/jpeg'});
+  const {data, error} = await sb.functions.invoke('ler-nota', {body: {image_base64: await b64(blob)}});
+  if (error || data?.error) { $('#rev').innerHTML = ''; return alert('Não foi possível ler a imagem: ' + (data?.error || error.message)); }
+  S.nota = {...data, path};
+  S.ins = await q(sb.from('insumos').select('id,nome,unidade_base').order('nome'));
+  S.ap = await q(sb.from('apelidos_insumo').select('insumo_id,apelido'));
+  review();
+}
+document.addEventListener('paste', e => {
+  const f = [...(e.clipboardData?.files || [])].find(f => f.type.startsWith('image/'));
+  if (f && tab == 'compras' && $('#rev')) lerArquivo(f);
+});
+function match(d) {
+  const n = String(d).toLowerCase().trim();
+  const a = S.ap.find(x => x.apelido.toLowerCase() == n); if (a) return a.insumo_id;
+  const i = S.ins.find(x => x.nome.toLowerCase() == n); return i ? i.id : '';
+}
+function review() {
+  const n = S.nota;
+  $('#rev').innerHTML = `<h3 style="margin-top:12px">Conferir antes de salvar</h3>
+  <div class="row"><input id="r_data" type="date" value="${esc(n.data || today())}"><input id="r_forn" placeholder="Fornecedor (opcional)" value="${esc(n.fornecedor)}"><input id="r_orig" placeholder="Origem (Shopee, loja...)" value="${esc(n.origem)}"></div>
+  <table id="r_itens">${(n.itens || []).map(it => { const m = match(it.descricao); return `<tr>
+    <td><input data-k="d" value="${esc(it.descricao)}"></td>
+    <td><input data-k="q" type="number" step="any" value="${it.quantidade}" style="width:75px"></td>
+    <td><input data-k="u" value="${esc(it.unidade || 'un')}" style="width:50px"></td>
+    <td><input data-k="p" type="number" step="any" value="${it.preco_total}" style="width:85px"></td>
+    <td><select data-k="i"><option value="">— sem vínculo —</option><option value="__novo" ${m ? '' : 'selected'}>+ Criar insumo novo</option>${S.ins.map(x => `<option value="${x.id}" ${m == x.id ? 'selected' : ''}>${esc(x.nome)} (${x.unidade_base})</option>`).join('')}</select></td>
+    <td><button class="sm" onclick="this.closest('tr').remove();soma()">✕</button></td></tr>`; }).join('')}</table>
+  <div class="row"><label>Frete <input id="r_frete" type="number" step="any" value="${n.frete || 0}" style="width:90px"></label>
+  <label>Desconto <input id="r_desc" type="number" step="any" value="${n.desconto || 0}" style="width:90px"></label>
+  <label>Outros <input id="r_out" type="number" step="any" value="${n.outros_custos || 0}" style="width:90px"></label></div>
+  <p id="r_soma"></p><button onclick="salvar()">Confirmar compra</button>`;
+  $('#rev').oninput = soma; soma();
+}
+function soma() {
+  const itens = [...document.querySelectorAll('#r_itens tr')].reduce((s, r) => s + (+r.querySelector('[data-k=p]').value || 0), 0);
+  const tot = itens + (+$('#r_frete').value || 0) + (+$('#r_out').value || 0) - (+$('#r_desc').value || 0), inf = S.nota.total_informado;
+  $('#r_soma').innerHTML = `Total calculado: <b>${R(tot)}</b>` + (inf != null ? ` · Total na nota: ${R(inf)} ${Math.abs(inf - tot) < .02 ? '<span class="ok">✔ confere</span>' : '<span class="bad">⚠ não confere, revise os valores</span>'}` : '');
+}
+async function salvar() {
+  const n = S.nota, base = u => ({kg:'g', g:'g', l:'ml', lt:'ml', ml:'ml'})[u.toLowerCase()] || 'un';
+  const rows = [...document.querySelectorAll('#r_itens tr')].map(r => ({
+    d: r.querySelector('[data-k=d]').value.trim(), q: +r.querySelector('[data-k=q]').value,
+    u: r.querySelector('[data-k=u]').value.trim() || 'un', p: +r.querySelector('[data-k=p]').value, i: r.querySelector('[data-k=i]').value}));
+  if (!rows.length || rows.some(x => !x.d || !(x.q > 0) || isNaN(x.p))) return alert('Confira descrição, quantidade e valor de cada item.');
+  const forn = $('#r_forn').value.trim(); let fid = null;
+  if (forn) {
+    const f = await q(sb.from('fornecedores').select('id').ilike('nome', forn).limit(1));
+    fid = f[0]?.id || (await q(sb.from('fornecedores').insert({nome: forn}).select('id')))[0].id;
+  }
+  const c = (await q(sb.from('compras').insert({data: $('#r_data').value, fornecedor_id: fid, origem: $('#r_orig').value || null,
+    numero_pedido: n.numero_pedido, total_informado: n.total_informado, imagem_path: n.path,
+    frete: +$('#r_frete').value || 0, desconto: +$('#r_desc').value || 0, outros_custos: +$('#r_out').value || 0}).select('id')))[0].id;
+  for (const x of rows) {
+    if (x.i == '__novo') x.i = (await q(sb.from('insumos').insert({nome: x.d, unidade_base: base(x.u)}).select('id')))[0].id;
+    else if (x.i) await sb.from('apelidos_insumo').insert({insumo_id: x.i, apelido: x.d}); // guarda o apelido (duplicado é ignorado)
+  }
+  await q(sb.from('itens_compra').insert(rows.map(x => ({compra_id: c, insumo_id: x.i || null, descricao_original: x.d, quantidade: x.q, unidade: x.u, preco_total: x.p}))));
+  await q(sb.from('compras').update({status: 'confirmada'}).eq('id', c));
+  const bad = await q(sb.from('itens_compra').select('descricao_original').eq('compra_id', c).not('insumo_id', 'is', null).is('qtd_base', null));
+  if (bad.length) alert('Atenção: a unidade não combina com o insumo (ex.: "un" para um insumo em gramas) em: ' + bad.map(b => b.descricao_original).join(', ') + '. Corrija a unidade do insumo ou exclua e refaça a compra.');
+  render();
+}
+
+// ---------- insumos ----------
+async function vInsumos() {
+  const d = await q(sb.from('insumos').select('*').order('categoria').order('nome'));
+  $('#main').innerHTML = `<div class="card"><button onclick="novoInsumo()">+ Novo insumo</button>
+  <table><tr><th>Nome</th><th>Categoria</th><th>Custo atual</th><th>Calcular pelo</th></tr>${d.map(x => `<tr><td>${esc(x.nome)}</td>
+  <td><input value="${esc(x.categoria)}" onchange="upd('insumos','${x.id}',{categoria:this.value||null})"></td>
+  <td>${x.custo_atual == null ? '<span class="mut">sem compra</span>' : R4(x.custo_atual) + ' / ' + x.unidade_base}</td>
+  <td><select onchange="upd('insumos','${x.id}',{metodo_custo:this.value}).then(render)"><option value="ultimo" ${x.metodo_custo=='ultimo'?'selected':''}>Última compra</option><option value="medio" ${x.metodo_custo=='medio'?'selected':''}>Média das compras</option></select></td></tr>`).join('')}</table></div>`;
+}
+async function novoInsumo() {
+  const nome = prompt('Nome do insumo (ex.: Cera de soja):'); if (!nome) return;
+  const u = prompt('Unidade de controle: g, ml ou un', 'g'); if (!['g', 'ml', 'un'].includes(u)) return alert('Use g, ml ou un.');
+  await q(sb.from('insumos').insert({nome, unidade_base: u})); render();
+}
+
+// ---------- produtos ----------
+async function vProdutos() {
+  const [v, pc, pr, ins, f] = await Promise.all([
+    q(sb.from('v_custo_produto').select('*').order('nome')), q(sb.from('v_preco_canal').select('*')),
+    q(sb.from('produtos').select('id,perda_percentual')), q(sb.from('insumos').select('id,nome,unidade_base').order('nome')),
+    q(sb.from('ficha_tecnica').select('id,produto_id,quantidade,insumos(nome,unidade_base),comp:produtos!componente_produto_id(nome)'))]);
+  const fld = (id, k, label, val) => `<label>${label} <input type="number" step="any" value="${val ?? ''}" style="width:90px" onchange="setProd('${id}','${k}',this.value)"></label>`;
+  $('#main').innerHTML = `<div class="card"><button onclick="novoProduto()">+ Novo produto</button></div><div class="card">${v.map(p => {
+    const perda = pr.find(x => x.id == p.produto_id)?.perda_percentual;
+    return `<details ${S.open == p.produto_id ? 'open' : ''}><summary>${esc(p.nome)} <span class="mut">(${esc(p.tipo)})</span> — custo ${R(p.custo_total)}${p.preco_venda ? ' · venda ' + R(p.preco_venda) : ''}</summary>
+    ${p.insumos_sem_custo > 0 ? `<p class="bad">⚠ ${p.insumos_sem_custo} insumo(s) sem custo: importe uma compra para calcular.</p>` : ''}
+    <div class="row">${fld(p.produto_id, 'perda_percentual', 'Perda %', perda)}${fld(p.produto_id, 'mao_de_obra', 'Mão de obra R$', p.mao_de_obra)}${fld(p.produto_id, 'custos_fixos', 'Custos fixos R$', p.custos_fixos)}${fld(p.produto_id, 'margem_alvo', 'Margem alvo %', p.margem_alvo)}${fld(p.produto_id, 'preco_venda', 'Preço de venda R$', p.preco_venda)}</div>
+    <table>${f.filter(x => x.produto_id == p.produto_id).map(x => `<tr><td>${esc(x.insumos?.nome || x.comp?.nome)}</td><td>${x.quantidade} ${x.insumos?.unidade_base || 'un'}</td><td><button class="sm" onclick="delFicha('${x.id}','${p.produto_id}')">✕</button></td></tr>`).join('') || '<tr><td class="mut">Ficha técnica vazia: adicione os insumos abaixo.</td></tr>'}</table>
+    <div class="row"><select id="fs_${p.produto_id}"><optgroup label="Insumos">${ins.map(i => `<option value="i:${i.id}">${esc(i.nome)} (${i.unidade_base})</option>`).join('')}</optgroup><optgroup label="Produtos (para kits)">${v.filter(o => o.produto_id != p.produto_id).map(o => `<option value="p:${o.produto_id}">${esc(o.nome)} (un)</option>`).join('')}</optgroup></select>
+    <input id="fq_${p.produto_id}" type="number" step="any" placeholder="Quantidade" style="width:110px"><button onclick="addFicha('${p.produto_id}')">Adicionar</button></div>
+    <table><tr><th>Canal</th><th>Preço sugerido</th><th>Margem atual</th></tr>${pc.filter(x => x.produto_id == p.produto_id).map(x => `<tr><td>${esc(x.canal)}</td><td>${x.preco_sugerido == null ? '—' : R(x.preco_sugerido)}</td><td>${x.margem_atual_pct == null ? '—' : x.margem_atual_pct + '% (' + R(x.lucro_atual) + ')'}</td></tr>`).join('')}</table>
+    <button class="sm" onclick="delProd('${p.produto_id}')">Excluir produto</button></details>`; }).join('') || '<p class="mut">Cadastre seu primeiro produto.</p>'}</div>`;
+}
+async function setProd(id, k, v) { await upd('produtos', id, {[k]: v === '' ? null : +v}); S.open = id; render(); }
+async function novoProduto() {
+  const nome = prompt('Nome do produto (ex.: Vela Lavanda 200g):'); if (!nome) return;
+  const tipo = prompt('Tipo (vela, kit, difusor, sabonete...):', 'vela') || 'vela';
+  await q(sb.from('produtos').insert({nome, tipo})); render();
+}
+async function addFicha(pid) {
+  const [k, id] = $('#fs_' + pid).value.split(':'), qtd = +$('#fq_' + pid).value;
+  if (!(qtd > 0)) return alert('Informe a quantidade.');
+  await q(sb.from('ficha_tecnica').insert({produto_id: pid, [k == 'i' ? 'insumo_id' : 'componente_produto_id']: id, quantidade: qtd}));
+  S.open = pid; render();
+}
+async function delFicha(id, pid) { await q(sb.from('ficha_tecnica').delete().eq('id', id)); S.open = pid; render(); }
+async function delProd(id) {
+  if (!confirm('Excluir este produto?')) return;
+  await q(sb.from('produtos').delete().eq('id', id)); render();
+}
+
+// ---------- canais ----------
+async function vCanais() {
+  const d = await q(sb.from('canais_venda').select('*').order('nome'));
+  const inp = (id, k, v) => `<td><input type="number" step="any" value="${v}" style="width:90px" onchange="upd('canais_venda','${id}',{${k}:+this.value})"></td>`;
+  $('#main').innerHTML = `<div class="card"><p class="mut">Informe as taxas reais de cada canal para o preço sugerido ficar correto.</p><table><tr><th>Canal</th><th>Taxa %</th><th>Taxa fixa R$</th><th>Imposto %</th></tr>${d.map(x => `<tr><td>${esc(x.nome)}</td>${inp(x.id, 'taxa_percentual', x.taxa_percentual)}${inp(x.id, 'taxa_fixa', x.taxa_fixa)}${inp(x.id, 'imposto_percentual', x.imposto_percentual)}</tr>`).join('')}</table></div>`;
+}
+
+sb.auth.getSession().then(({data}) => data.session ? render() : login());
+</script>
+</body>
+</html>
